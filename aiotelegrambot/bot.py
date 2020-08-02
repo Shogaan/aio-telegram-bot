@@ -10,14 +10,14 @@ from aiotelegrambot.errors import BotError, TelegramApiError
 from aiotelegrambot.handler import Handlers
 from aiotelegrambot.message import Message
 from aiotelegrambot.middleware import Middlewares
-from aiotelegrambot.types import recognize_type
+from aiotelegrambot.rules import Command, Rule
+from aiotelegrambot.types import Chat, Content, Incoming, recognize_type
 
 logger = logging.getLogger(__name__)
 
 
-class Bot:
-    def __init__(self, client: Client, handlers: Handlers = None):
-        self.client = client
+class BotBase:
+    def __init__(self, handlers: Handlers = None):
         self.handlers = handlers or Handlers()
         self.middlewares = Middlewares()
         self._scheduler = None
@@ -54,6 +54,58 @@ class Bot:
     def add_handler(self, handler: Callable, *args, **kwargs):
         self.handlers.add(*args, **kwargs)(handler)
 
+    async def _process_updates(self, data: Union[None, dict]):
+        if data:
+            for raw in data["result"]:
+                await self.process_update(raw)
+                self._update_id = max(raw["update_id"], self._update_id)
+            self._update_id += 1 if data["result"] else 0
+
+
+class Bot(BotBase):
+    def __init__(self, *, loop=None):
+        super().__init__()
+        self.loop = asyncio.get_event_loop() if loop is None else loop
+        self.client = None
+        self.webhook = None
+
+    def command(self):
+        """
+        Decorator for creating bot's command.
+
+        ```
+        bot = Bot()
+
+        @bot.command()
+        def name_of_command(message: Message):
+            # useful stuff here
+            pass
+        ```
+        """
+
+        def decorator(func):
+            return self.add_handler(func,
+                                    content_type=Content.COMMAND,
+                                    rule=Command())
+        return decorator
+
+    def trigger_message(self,
+                        message_type: Union[Chat, Incoming, Content] = None,
+                        rule: Rule = None):
+        """
+        Decorator for creating a handler for any type of message,
+        specifized in `message_type`.
+        """
+
+        if not message_type:
+            raise BotError("message_type Union[Chat, Incoming, Content] must be specifized")
+
+        def decorator(func):
+            return self.add_handler(func,
+                                    content_type=message_type,
+                                    rule=rule)
+        return decorator
+
     async def process_update(self, data: dict):
         if self._closed is True:
             raise RuntimeError("The bot isn't initialized")
@@ -63,6 +115,20 @@ class Bot:
         await self._scheduler.spawn(
             self.middlewares(Message(self.client, data, self.ctx, chat_type, incoming, content_type), handler)
         )
+
+    def run(self, token, webhook = False):
+        self.client = Client(token)
+        self.webhook = webhook
+
+        try:
+            self.loop.run_until_complete(self._start())
+
+        except KeyboardInterrupt:
+            self.loop.run_until_complete(self.close())
+            self.loop.run_until_complete(self.client.close())
+
+        finally:
+            self.loop.close()
 
     async def _get_updates(self, interval: float):
         while self._closed is False:
@@ -82,9 +148,8 @@ class Bot:
                 logger.exception(str(e))
                 await asyncio.sleep(10)
 
-    async def _process_updates(self, data: Union[None, dict]):
-        if data:
-            for raw in data["result"]:
-                await self.process_update(raw)
-                self._update_id = max(raw["update_id"], self._update_id)
-            self._update_id += 1 if data["result"] else 0
+    async def _start(self):
+        await self.initialize(webhook=self.webhook)
+        while True:
+            await asyncio.sleep(100)
+
