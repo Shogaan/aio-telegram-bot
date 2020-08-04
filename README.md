@@ -34,7 +34,7 @@ from aiotelegrambot.rules import Contains
 bot = Bot()
 
 
-@bot.trigger_message(Content.TEXT, Contains("hi")
+@bot.trigger_message(Content.TEXT, Contains("hi"))
 async def hi(message: Message):
     await message.send_message("Hello!", True)
 
